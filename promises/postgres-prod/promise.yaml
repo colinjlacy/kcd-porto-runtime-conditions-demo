@@ -79,6 +79,14 @@ spec:
               - name: configure
                 image: ghcr.io/colinjlacy/kcd-porto-runtime-conditions-demo/promise-postgres-prod:latest
                 args: ["configure"]
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 512Mi
+                    ephemeral-storage: 2Gi
+                  limits:
+                    memory: 1Gi
+                    ephemeral-storage: 3Gi
                 env:
                   - name: TARGET_NAMESPACE
                     value: application-support
@@ -99,6 +107,14 @@ spec:
               - name: delete
                 image: ghcr.io/colinjlacy/kcd-porto-runtime-conditions-demo/promise-postgres-prod:latest
                 args: ["delete"]
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 512Mi
+                    ephemeral-storage: 2Gi
+                  limits:
+                    memory: 1Gi
+                    ephemeral-storage: 3Gi
                 env:
                   - name: TARGET_NAMESPACE
                     value: application-support
