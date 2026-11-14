@@ -59,6 +59,7 @@ export const shipmentEvents = natsService(
     operations: [
       new OperationsItem({ resource: Resource.Connection, action: Action.Connect }),
       new OperationsItem({ resource: Resource.Consumer, action: Action.Consume, stream: "SHIPMENTS", name: "shipment-notifier" }),
+      new OperationsItem({ resource: Resource.Subject, action: Action.Subscribe, subject: "orders.shipped" }),
     ],
   }),
   new Configuration({

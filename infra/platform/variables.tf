@@ -150,3 +150,15 @@ variable "workload_chart_versions" {
   }
   nullable = false
 }
+
+variable "notification_from_address" {
+  description = "Sender address the SMTP requests use. Production requires it to be an SES-verifiable address."
+  type        = string
+  nullable    = false
+}
+
+variable "notification_to_address" {
+  description = "Recipient address the SMTP requests use. Production requires it to be an SES-verifiable address."
+  type        = string
+  nullable    = false
+}
