@@ -69,7 +69,7 @@ Helm skips a CRD that already exists and does not upgrade or delete CRDs under a
 | `rcprofile-publisher` Lambda | Runs in the management cluster's subnets and applies the submitted profile with server-side apply, adding the `demo.runtimeconditions.io/image` annotation. Reapplying a profile name updates the same resource. |
 | EKS access entry, Role, RoleBinding | Limit the Lambda to get/create/patch on RCProfiles in the profile namespace. |
 
-Additional inputs: `github_repository` (`owner/name`), `github_deployment_branch` (default `main`), `create_github_oidc_provider` (default `true`), and `publisher_security_group_id`. Set `github_repository` in your `default.tfvars` to the GitHub repository whose workflow publishes profiles; it has no default. Foundation creates the security group and exposes it:
+Additional inputs: `github_repository` (`owner/name`), `github_oidc_subject_repository` (the repository as written in the workflow token's `sub` claim, which is `owner@ownerID/name@repoID` when GitHub issues immutable-ID subjects), `github_deployment_branch` (default `main`), `create_github_oidc_provider` (default `true`), and `publisher_security_group_id`. Set `github_repository` in your `default.tfvars` to the GitHub repository whose workflow publishes profiles; it has no default. Foundation creates the security group and exposes it:
 
 ```sh
 export TF_VAR_publisher_security_group_id="$(tofu -chdir=../foundation output -raw profile_publisher_security_group_id)"

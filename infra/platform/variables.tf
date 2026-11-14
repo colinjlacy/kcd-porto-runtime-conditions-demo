@@ -108,6 +108,17 @@ variable "github_repository" {
   }
 }
 
+variable "github_oidc_subject_repository" {
+  description = "The repository exactly as it appears in the workflow token's sub claim: owner/name, or owner@ownerID/name@repoID when GitHub issues immutable-ID subjects."
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+(@[0-9]+)?/[A-Za-z0-9_.-]+(@[0-9]+)?$", var.github_oidc_subject_repository))
+    error_message = "Use owner/name or owner@ownerID/name@repoID."
+  }
+}
+
 variable "github_deployment_branch" {
   description = "Branch whose workflow runs may assume the publisher role."
   type        = string

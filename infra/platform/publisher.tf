@@ -42,7 +42,7 @@ data "aws_iam_policy_document" "github_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:refs/heads/${var.github_deployment_branch}"]
+      values   = ["repo:${var.github_oidc_subject_repository}:ref:refs/heads/${var.github_deployment_branch}"]
     }
   }
 }

@@ -84,7 +84,7 @@ resource "aws_vpc_security_group_egress_rule" "publisher_https" {
   to_port           = 443
 }
 
-# The production database created by the postgres-prod Promise uses this group.
+# The shared production Aurora cluster uses this group.
 resource "aws_vpc_security_group_ingress_rule" "postgres_from_production_nodes" {
   security_group_id            = aws_security_group.profile_publisher.id
   referenced_security_group_id = aws_security_group.nodes["production"].id
@@ -92,6 +92,15 @@ resource "aws_vpc_security_group_ingress_rule" "postgres_from_production_nodes" 
   from_port                    = 5432
   to_port                      = 5432
   description                  = "Production workloads reach Aurora PostgreSQL"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "postgres_from_management_nodes" {
+  security_group_id            = aws_security_group.profile_publisher.id
+  referenced_security_group_id = aws_security_group.nodes["management"].id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  description                  = "The postgres-prod Promise provisions databases on Aurora PostgreSQL"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "management_from_publisher" {

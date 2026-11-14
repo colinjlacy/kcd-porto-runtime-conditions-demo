@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Kratix pipeline: "configure" applies one Aurora Serverless PostgreSQL cluster per source
-# profile with OpenTofu and renders its connection settings for the production cluster;
-# "delete" destroys that cluster.
+# Kratix pipeline: "configure" creates one database and one login for a source profile on the
+# shared production Aurora cluster and renders its connection settings for the production
+# cluster; "delete" drops that database and login. The cluster itself is owned by the platform.
 set -euo pipefail
 
 mode="${1:?usage: pipeline.sh configure|delete}"
 object=/kratix/input/object.yaml
 target_namespace="${TARGET_NAMESPACE:?TARGET_NAMESPACE must be set}"
-config_map="${AWS_CONFIG_MAP:-promise-aws-config}"
+admin_secret="${POSTGRES_ADMIN_SECRET:-shared-postgres}"
 
 read_field() {
   local value
@@ -22,71 +22,92 @@ read_field() {
 source_namespace="$(read_field .spec.source.namespace)"
 source_name="$(read_field .spec.source.name)"
 source_uid="$(read_field .spec.source.uid)"
-database_name="$(read_field .spec.databaseName)"
-min_capacity="$(read_field .spec.minCapacity)"
-max_capacity="$(read_field .spec.maxCapacity)"
+
+request_kind="$(read_field .kind)"
+request_api_version="$(read_field .apiVersion)"
+request_name="$(read_field .metadata.name)"
+request_uid="$(read_field .metadata.uid)"
+request_namespace="$(read_field .metadata.namespace)"
 
 # Names derive from the source profile UID so a recreated profile never reuses old resources.
-id="pg-$(printf '%s' "$source_uid" | sha256sum | cut -c1-12)"
+hash="$(printf '%s' "$source_uid" | sha256sum | cut -c1-12)"
+id="pg-${hash}"
 credentials_name="${id}-credentials"
+# The database and login share one name: hex digits only, so they are safe in SQL. PostgreSQL
+# reserves the pg_ prefix for roles, so the name cannot start with it.
+database="db_${hash}"
 
-settings="$(kubectl get configmap "$config_map" -n "$KRATIX_OBJECT_NAMESPACE" -o json)"
-setting() {
-  jq -er --arg key "$1" '.data[$key]' <<<"$settings"
+admin="$(kubectl get secret "$admin_secret" -n "$request_namespace" -o json)"
+admin_field() {
+  jq -er --arg key "$1" '.data[$key] | @base64d' <<<"$admin"
 }
-region="$(setting AWS_REGION)"
-state_bucket="$(setting STATE_BUCKET)"
+host="$(admin_field host)"
+port="$(admin_field port)"
+admin_username="$(admin_field username)"
+PGPASSWORD="$(admin_field password)"
+# Aurora only offers its own certificate authority, so the connection is encrypted but unverified.
+export PGPASSWORD PGSSLMODE=require PGCONNECT_TIMEOUT=30
 
-work="$(mktemp -d)"
-cp -R /opt/tofu/. "$work"
-cd "$work"
-export TF_IN_AUTOMATION=1 AWS_REGION="$region"
+psql_admin() {
+  psql -h "$host" -p "$port" -U "$admin_username" -d postgres -v ON_ERROR_STOP=1 -tAq "$@"
+}
 
-tofu init -input=false \
-  -backend-config="bucket=${state_bucket}" \
-  -backend-config="key=postgres-prod/${id}/terraform.tfstate" \
-  -backend-config="region=${region}" \
-  -backend-config="use_lockfile=true"
-
-tags="$(jq -cn \
-  --arg ns "$source_namespace" --arg name "$source_name" --arg uid "$source_uid" \
-  '{"demo.runtimeconditions.io/source-namespace": $ns, "demo.runtimeconditions.io/source-name": $name, "demo.runtimeconditions.io/source-uid": $uid}')"
-
-tofu_args=(
-  -input=false
-  -var "aws_region=${region}"
-  -var "name=${id}"
-  -var "subnet_ids=$(jq -cn --arg v "$(setting SUBNET_IDS)" '$v | split(",")')"
-  -var "security_group_id=$(setting SECURITY_GROUP_ID)"
-  -var "database_name=${database_name}"
-  -var "min_capacity=${min_capacity}"
-  -var "max_capacity=${max_capacity}"
-  -var "tags=${tags}"
-)
+# A paused cluster resumes on the first connection, which can take a minute.
+for attempt in $(seq 1 10); do
+  if psql_admin -c 'SELECT 1' >/dev/null 2>&1; then
+    break
+  fi
+  if [[ "$attempt" == 10 ]]; then
+    echo "Aurora at ${host} did not accept connections" >&2
+    exit 1
+  fi
+  sleep 15
+done
 
 if [[ "$mode" == "delete" ]]; then
-  tofu destroy -auto-approve "${tofu_args[@]}"
+  psql_admin -c "DROP DATABASE IF EXISTS ${database} WITH (FORCE)" -c "DROP ROLE IF EXISTS ${database}"
   exit 0
 fi
 
-tofu apply -auto-approve "${tofu_args[@]}"
+# The password is kept in a Secret owned by the request in the management cluster, so
+# reruns reuse it and deleting the request removes it.
+password_b64="$(kubectl get secret "$credentials_name" -n "$request_namespace" \
+  --ignore-not-found -o jsonpath='{.data.password}')"
+if [[ -z "$password_b64" ]]; then
+  kubectl create -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${credentials_name}
+  namespace: ${request_namespace}
+  ownerReferences:
+    - apiVersion: ${request_api_version}
+      kind: ${request_kind}
+      name: ${request_name}
+      uid: ${request_uid}
+stringData:
+  password: $(openssl rand -hex 24)
+EOF
+  password_b64="$(kubectl get secret "$credentials_name" -n "$request_namespace" \
+    -o jsonpath='{.data.password}')"
+fi
+password="$(printf '%s' "$password_b64" | base64 -d)"
 
-outputs="$(tofu output -json)"
-output() {
-  jq -er --arg key "$1" '.[$key].value | tostring' <<<"$outputs"
-}
-host="$(output host)"
-port="$(output port)"
-username="$(output username)"
-password="$(output password)"
-database="$(output database_name)"
+if [[ -z "$(psql_admin -c "SELECT 1 FROM pg_roles WHERE rolname = '${database}'")" ]]; then
+  psql_admin -c "CREATE ROLE ${database} LOGIN PASSWORD '${password}'"
+fi
+# The admin must be able to act as the owner to create the database for it.
+psql_admin -c "GRANT ${database} TO ${admin_username}"
+if [[ -z "$(psql_admin -c "SELECT 1 FROM pg_database WHERE datname = '${database}'")" ]]; then
+  psql_admin -c "CREATE DATABASE ${database} OWNER ${database}"
+fi
+# Other profiles' logins must not be able to connect to this database.
+psql_admin -c "REVOKE ALL ON DATABASE ${database} FROM PUBLIC"
 
 labels="{app.kubernetes.io/name: postgres, app.kubernetes.io/instance: ${id}, demo.runtimeconditions.io/source-uid: \"${source_uid}\"}"
 annotations="{demo.runtimeconditions.io/source-namespace: \"${source_namespace}\", demo.runtimeconditions.io/source-name: \"${source_name}\"}"
 
 mkdir -p /kratix/output /kratix/metadata
-# Aurora's certificate authority is not in Node's trust store, so the URL asks for an
-# encrypted but unverified connection.
 cat > /kratix/output/postgres.yaml <<EOF
 apiVersion: v1
 kind: Secret
@@ -97,7 +118,7 @@ metadata:
   annotations: ${annotations}
 type: Opaque
 stringData:
-  DATABASE_URL: postgres://${username}:${password}@${host}:${port}/${database}?sslmode=no-verify
+  DATABASE_URL: postgres://${database}:${password}@${host}:${port}/${database}?sslmode=no-verify
 ---
 apiVersion: v1
 kind: ConfigMap
