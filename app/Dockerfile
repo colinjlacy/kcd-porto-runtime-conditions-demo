@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG NODE_IMAGE=node:22-bookworm-slim@sha256:1ee7b5f35129c6f4af835661a7a3cfbdd4748944c23b05567aa6ec00c6689e46
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
