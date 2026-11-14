@@ -8,6 +8,7 @@ mode="${1:?usage: pipeline.sh configure|delete}"
 object=/kratix/input/object.yaml
 target_namespace="${TARGET_NAMESPACE:?TARGET_NAMESPACE must be set}"
 admin_secret="${POSTGRES_ADMIN_SECRET:-shared-postgres}"
+admin_namespace="${POSTGRES_ADMIN_NAMESPACE:?POSTGRES_ADMIN_NAMESPACE must be set}"
 
 read_field() {
   local value
@@ -37,7 +38,7 @@ credentials_name="${id}-credentials"
 # reserves the pg_ prefix for roles, so the name cannot start with it.
 database="db_${hash}"
 
-admin="$(kubectl get secret "$admin_secret" -n "$request_namespace" -o json)"
+admin="$(kubectl get secret "$admin_secret" -n "$admin_namespace" -o json)"
 admin_field() {
   jq -er --arg key "$1" '.data[$key] | @base64d' <<<"$admin"
 }

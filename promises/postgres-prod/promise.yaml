@@ -59,6 +59,11 @@ spec:
                 - apiGroups: [""]
                   resources: ["secrets"]
                   verbs: ["get", "create"]
+                - apiGroups: [""]
+                  resources: ["secrets"]
+                  resourceNames: ["shared-postgres"]
+                  resourceNamespace: platform-database
+                  verbs: ["get"]
             containers:
               - name: configure
                 image: ghcr.io/colinjlacy/kcd-porto-runtime-conditions-demo/promise-postgres-prod:latest
@@ -66,6 +71,8 @@ spec:
                 env:
                   - name: TARGET_NAMESPACE
                     value: application-support
+                  - name: POSTGRES_ADMIN_NAMESPACE
+                    value: platform-database
       delete:
         - apiVersion: platform.kratix.io/v1alpha1
           kind: Pipeline
@@ -76,6 +83,8 @@ spec:
               permissions:
                 - apiGroups: [""]
                   resources: ["secrets"]
+                  resourceNames: ["shared-postgres"]
+                  resourceNamespace: platform-database
                   verbs: ["get"]
             containers:
               - name: delete
@@ -84,3 +93,5 @@ spec:
                 env:
                   - name: TARGET_NAMESPACE
                     value: application-support
+                  - name: POSTGRES_ADMIN_NAMESPACE
+                    value: platform-database

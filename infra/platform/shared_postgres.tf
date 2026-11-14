@@ -5,6 +5,16 @@ locals {
   shared_postgres_name = "${local.publisher_name}-shared-postgres"
 }
 
+# The admin login lives in its own namespace so only the postgres-prod workflow is granted
+# access to it; the namespace that holds Promise requests is readable by every Promise workflow.
+resource "kubernetes_namespace_v1" "database_admin" {
+  provider = kubernetes.management
+  metadata {
+    name   = "platform-database"
+    labels = { "demo.runtimeconditions.io/environment" = "management" }
+  }
+}
+
 resource "random_password" "shared_postgres_admin" {
   length  = 32
   special = false
@@ -45,7 +55,7 @@ resource "kubernetes_secret_v1" "shared_postgres_admin" {
   provider = kubernetes.management
   metadata {
     name      = "shared-postgres"
-    namespace = kubernetes_namespace_v1.promise_workflows.metadata[0].name
+    namespace = kubernetes_namespace_v1.database_admin.metadata[0].name
   }
   data = {
     host     = aws_rds_cluster.shared_postgres.endpoint
