@@ -1,6 +1,6 @@
 import { KubernetesObjectApi, PatchStrategy, type KubernetesObject } from "@kubernetes/client-node";
 import type { Cluster, ExistingRequest } from "./reconciler.js";
-import { API_VERSION, MANAGED_BY, type Profile, REQUEST_KINDS, type RequestObject, SOURCE_UID_LABEL } from "./requests.js";
+import { MANAGED_BY, type Profile, REQUEST_TYPES, type RequestObject, SOURCE_UID_LABEL } from "./requests.js";
 
 const FIELD_MANAGER = MANAGED_BY;
 
@@ -22,12 +22,12 @@ export class KubernetesCluster implements Cluster {
 
   async listRequests(): Promise<readonly ExistingRequest[]> {
     const found: ExistingRequest[] = [];
-    for (const kind of REQUEST_KINDS) {
-      const list = await this.api.list(API_VERSION, kind, this.requestNamespace, undefined, undefined, undefined, undefined, `app.kubernetes.io/managed-by=${MANAGED_BY}`);
+    for (const { apiVersion, kind } of REQUEST_TYPES) {
+      const list = await this.api.list(apiVersion, kind, this.requestNamespace, undefined, undefined, undefined, undefined, `app.kubernetes.io/managed-by=${MANAGED_BY}`);
       for (const item of list.items) {
         const sourceUid = item.metadata?.labels?.[SOURCE_UID_LABEL];
         if (item.metadata?.name !== undefined && sourceUid !== undefined) {
-          found.push({ kind, name: item.metadata.name, sourceUid });
+          found.push({ apiVersion, kind, name: item.metadata.name, sourceUid });
         }
       }
     }
@@ -36,7 +36,7 @@ export class KubernetesCluster implements Cluster {
 
   async deleteRequest(request: ExistingRequest): Promise<void> {
     try {
-      await this.api.delete({ apiVersion: API_VERSION, kind: request.kind, metadata: { name: request.name, namespace: this.requestNamespace } });
+      await this.api.delete({ apiVersion: request.apiVersion, kind: request.kind, metadata: { name: request.name, namespace: this.requestNamespace } });
     } catch (error) {
       if (!isNotFound(error)) {
         throw error;

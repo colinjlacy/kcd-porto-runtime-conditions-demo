@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Kratix pipeline: "configure" issues SMTP credentials for one source profile with OpenTofu, an IAM
-# user allowed to send only as the platform's verified sender identity, then renders the
-# connection settings for the production cluster; "delete" destroys the user.
+# Kratix pipeline: "configure" issues SMTP credentials for one EmailSender request with OpenTofu, an
+# IAM user allowed to send only as the requested, platform-verified sender identity, then publishes
+# a service-binding Secret to the production cluster; "delete" destroys the user.
 set -euo pipefail
 
 mode="${1:?usage: pipeline.sh configure|delete}"
@@ -19,16 +19,14 @@ read_field() {
   printf '%s' "$value"
 }
 
-source_namespace="$(read_field .spec.source.namespace)"
-source_name="$(read_field .spec.source.name)"
-source_uid="$(read_field .spec.source.uid)"
-notification_from="$(read_field .spec.from)"
-notification_to="$(read_field .spec.to)"
+request_namespace="$(read_field .metadata.namespace)"
+request_name="$(read_field .metadata.name)"
+request_uid="$(read_field .metadata.uid)"
+sender="$(read_field .spec.sender)"
 
-# Names derive from the source profile UID so a recreated profile never reuses old resources.
-hash="$(printf '%s' "$source_uid" | sha256sum | cut -c1-12)"
+# Names derive from the request UID so a recreated request never reuses old resources.
+hash="$(printf '%s' "$request_uid" | sha256sum | cut -c1-12)"
 id="smtp-${hash}"
-credentials_name="${id}-credentials"
 
 settings="$(kubectl get configmap "$config_map" -n "$KRATIX_OBJECT_NAMESPACE" -o json)"
 setting() {
@@ -49,15 +47,14 @@ tofu init -input=false \
   -backend-config="use_lockfile=true"
 
 tags="$(jq -cn \
-  --arg ns "$source_namespace" --arg name "$source_name" --arg uid "$source_uid" \
-  '{"demo.runtimeconditions.io/source-namespace": $ns, "demo.runtimeconditions.io/source-name": $name, "demo.runtimeconditions.io/source-uid": $uid}')"
+  --arg ns "$request_namespace" --arg name "$request_name" --arg uid "$request_uid" \
+  '{"platform.runtimeconditions.io/request-namespace": $ns, "platform.runtimeconditions.io/request-name": $name, "platform.runtimeconditions.io/request-uid": $uid}')"
 
 tofu_args=(
   -input=false
   -var "aws_region=${region}"
   -var "name=${id}"
-  -var "from_address=${notification_from}"
-  -var "to_address=${notification_to}"
+  -var "from_address=${sender}"
   -var "tags=${tags}"
 )
 
@@ -76,45 +73,29 @@ host="$(output host)"
 username="$(output username)"
 password="$(output password)"
 sender_verified="$(output sender_verified)"
-recipient_verified="$(output recipient_verified)"
-
-labels="{app.kubernetes.io/name: ses-smtp, app.kubernetes.io/instance: ${id}, demo.runtimeconditions.io/source-uid: \"${source_uid}\"}"
-annotations="{demo.runtimeconditions.io/source-namespace: \"${source_namespace}\", demo.runtimeconditions.io/source-name: \"${source_name}\"}"
+port=587
 
 mkdir -p /kratix/output /kratix/metadata
-cat > /kratix/output/smtp.yaml <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${credentials_name}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-type: Opaque
-stringData:
-  SMTP_USERNAME: ${username}
-  SMTP_PASSWORD: ${password}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${id}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-data:
-  SMTP_HOST: ${host}
-  SMTP_PORT: "587"
-  SMTP_TLS_MODE: starttls
-  NOTIFICATION_FROM: ${notification_from}
-  NOTIFICATION_TO: ${notification_to}
-EOF
+jq -n \
+  --arg name "$request_name" --arg namespace "$target_namespace" \
+  --arg requestNamespace "$request_namespace" --arg requestName "$request_name" \
+  --arg host "$host" --arg port "$port" --arg username "$username" \
+  --arg password "$password" --arg sender "$sender" '
+  {
+    apiVersion: "v1", kind: "Secret",
+    metadata: {
+      name: $name, namespace: $namespace,
+      labels: {"app.kubernetes.io/name": "ses-smtp", "app.kubernetes.io/instance": $name, "app.kubernetes.io/managed-by": "kratix"},
+      annotations: {"platform.runtimeconditions.io/request-namespace": $requestNamespace, "platform.runtimeconditions.io/request-name": $requestName}
+    },
+    type: "Opaque",
+    stringData: {type: "smtp", host: $host, port: $port, username: $username, password: $password, tlsMode: "starttls", sender: $sender}
+  }' | yq -P > /kratix/output/binding.yaml
 
 cat > /kratix/metadata/status.yaml <<EOF
+bindingSecret: ${request_name}
 host: ${host}
-port: 587
-connectionConfigMap: ${id}
-credentialsSecret: ${credentials_name}
+port: ${port}
+sender: ${sender}
 senderVerification: ${sender_verified}
-recipientVerification: ${recipient_verified}
 EOF

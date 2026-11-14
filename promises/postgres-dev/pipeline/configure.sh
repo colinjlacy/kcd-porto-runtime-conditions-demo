@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Kratix configure pipeline: renders a PostgreSQL StatefulSet, Service, ConfigMap and
-# Secret for one source profile. Kratix delivers /kratix/output to the dev Destination.
+# Kratix configure pipeline: runs one PostgreSQL instance in the dev cluster for a request and
+# publishes its connection details as a service-binding Secret named after the request.
+# Kratix delivers /kratix/output to the selected Destination.
 set -euo pipefail
 
 object=/kratix/input/object.yaml
 target_namespace="${TARGET_NAMESPACE:?TARGET_NAMESPACE must be set}"
+postgres_image="${POSTGRES_IMAGE:?POSTGRES_IMAGE must be set}"
+storage_size="${STORAGE_SIZE:?STORAGE_SIZE must be set}"
 
 read_field() {
   local value
@@ -16,34 +19,29 @@ read_field() {
   printf '%s' "$value"
 }
 
-source_namespace="$(read_field .spec.source.namespace)"
-source_name="$(read_field .spec.source.name)"
-source_uid="$(read_field .spec.source.uid)"
-database_name="$(read_field .spec.databaseName)"
-storage_size="$(read_field .spec.storageSize)"
-
 request_kind="$(read_field .kind)"
 request_api_version="$(read_field .apiVersion)"
 request_name="$(read_field .metadata.name)"
 request_uid="$(read_field .metadata.uid)"
 request_namespace="$(read_field .metadata.namespace)"
 
-# Names derive from the source profile UID so a recreated profile never reuses old resources.
-id="pg-$(printf '%s' "$source_uid" | sha256sum | cut -c1-12)"
-credentials_name="${id}-credentials"
-database_user="app"
-host="${id}.${target_namespace}.svc.cluster.local"
+# Every output is named after the request, so consumers can reference it without any lookup.
+name="$request_name"
+database=app
+username=app
+host="${name}.${target_namespace}.svc.cluster.local"
 
 # The password is kept in a Secret owned by the request in the management cluster, so
 # reruns reuse it and deleting the request removes it.
-password_b64="$(kubectl get secret "$credentials_name" -n "$request_namespace" \
+password_secret="${name}-password"
+password_b64="$(kubectl get secret "$password_secret" -n "$request_namespace" \
   --ignore-not-found -o jsonpath='{.data.password}')"
 if [[ -z "$password_b64" ]]; then
   kubectl create -f - <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ${credentials_name}
+  name: ${password_secret}
   namespace: ${request_namespace}
   ownerReferences:
     - apiVersion: ${request_api_version}
@@ -53,52 +51,43 @@ metadata:
 stringData:
   password: $(openssl rand -hex 24)
 EOF
-  password_b64="$(kubectl get secret "$credentials_name" -n "$request_namespace" \
+  password_b64="$(kubectl get secret "$password_secret" -n "$request_namespace" \
     -o jsonpath='{.data.password}')"
 fi
 password="$(printf '%s' "$password_b64" | base64 -d)"
 
-labels="{app.kubernetes.io/name: postgres, app.kubernetes.io/instance: ${id}, demo.runtimeconditions.io/source-uid: \"${source_uid}\"}"
-annotations="{demo.runtimeconditions.io/source-namespace: \"${source_namespace}\", demo.runtimeconditions.io/source-name: \"${source_name}\"}"
+labels="{app.kubernetes.io/name: postgresql, app.kubernetes.io/instance: ${name}, app.kubernetes.io/managed-by: kratix}"
+annotations="{platform.runtimeconditions.io/request-namespace: \"${request_namespace}\", platform.runtimeconditions.io/request-name: \"${request_name}\"}"
 
 mkdir -p /kratix/output /kratix/metadata
 cat > /kratix/output/postgres.yaml <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ${credentials_name}
+  name: ${name}
   namespace: ${target_namespace}
   labels: ${labels}
   annotations: ${annotations}
 type: Opaque
 stringData:
-  POSTGRES_USER: ${database_user}
-  POSTGRES_PASSWORD: ${password}
-  POSTGRES_DB: ${database_name}
-  DATABASE_URL: postgres://${database_user}:${password}@${host}:5432/${database_name}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${id}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-data:
-  DATABASE_HOST: ${host}
-  DATABASE_PORT: "5432"
-  DATABASE_NAME: ${database_name}
+  type: postgresql
+  host: ${host}
+  port: "5432"
+  database: ${database}
+  username: ${username}
+  password: ${password}
+  uri: postgres://${username}:${password}@${host}:5432/${database}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${id}
+  name: ${name}
   namespace: ${target_namespace}
   labels: ${labels}
   annotations: ${annotations}
 spec:
   selector:
-    app.kubernetes.io/instance: ${id}
+    app.kubernetes.io/instance: ${name}
   ports:
     - name: postgres
       port: 5432
@@ -107,16 +96,16 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: ${id}
+  name: ${name}
   namespace: ${target_namespace}
   labels: ${labels}
   annotations: ${annotations}
 spec:
-  serviceName: ${id}
+  serviceName: ${name}
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/instance: ${id}
+      app.kubernetes.io/instance: ${name}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: Delete
     whenScaled: Retain
@@ -130,16 +119,19 @@ spec:
         fsGroup: 70
       containers:
         - name: postgres
-          image: postgres:17-alpine
+          image: ${postgres_image}
           ports:
             - name: postgres
               containerPort: 5432
-          envFrom:
-            - secretRef:
-                name: ${credentials_name}
           env:
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: ${name}, key: username}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: ${name}, key: password}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: ${name}, key: database}}
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -U \$POSTGRES_USER -d \$POSTGRES_DB"]
@@ -159,9 +151,8 @@ spec:
 EOF
 
 cat > /kratix/metadata/status.yaml <<EOF
+bindingSecret: ${name}
 host: ${host}
 port: 5432
-databaseName: ${database_name}
-connectionConfigMap: ${id}
-credentialsSecret: ${credentials_name}
+database: ${database}
 EOF

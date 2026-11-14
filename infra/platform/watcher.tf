@@ -4,12 +4,19 @@ locals {
   watcher_name  = "rcprofile-watcher"
   watcher_image = "ghcr.io/${lower(var.github_repository)}/watcher:latest"
 
-  # Plural resource names of the Kratix request kinds the watcher manages.
-  watcher_request_resources = [
-    "applications",
-    "devpostgreses", "devnatses", "devsmtps",
-    "prodpostgreses", "prodnatses", "prodsmtps",
-  ]
+  # API groups and plural resource names of the Kratix request kinds the watcher manages.
+  watcher_request_groups = {
+    "platform.runtimeconditions.io"            = ["workloads"]
+    "dev.platform.runtimeconditions.io"        = ["postgresdatabases", "natsstreams", "emailsenders"]
+    "production.platform.runtimeconditions.io" = ["postgresdatabases", "natsstreams", "emailsenders"]
+  }
+
+  # Images of the readiness checks the watcher adds to workloads.
+  watcher_check_images = {
+    POSTGRES_CLIENT_IMAGE = "postgres:17-alpine"
+    CURL_IMAGE            = "curlimages/curl:8.11.1"
+    NATS_BOX_IMAGE        = "natsio/nats-box:0.14.5"
+  }
 }
 
 resource "kubernetes_namespace_v1" "watcher" {
@@ -71,10 +78,13 @@ resource "kubernetes_role_v1" "watcher_requests" {
     name      = local.watcher_name
     namespace = kubernetes_namespace_v1.promise_workflows.metadata[0].name
   }
-  rule {
-    api_groups = ["platform.runtimeconditions.io"]
-    resources  = local.watcher_request_resources
-    verbs      = ["get", "list", "watch", "create", "patch", "delete"]
+  dynamic "rule" {
+    for_each = local.watcher_request_groups
+    content {
+      api_groups = [rule.key]
+      resources  = rule.value
+      verbs      = ["get", "list", "watch", "create", "patch", "delete"]
+    }
   }
 }
 
@@ -137,6 +147,13 @@ resource "kubernetes_deployment_v1" "watcher" {
           env {
             name  = "SMTP_TO_ADDRESS"
             value = var.notification_to_address
+          }
+          dynamic "env" {
+            for_each = local.watcher_check_images
+            content {
+              name  = env.key
+              value = env.value
+            }
           }
 
           resources {

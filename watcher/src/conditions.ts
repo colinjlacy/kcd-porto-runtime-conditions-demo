@@ -1,5 +1,12 @@
 export type Integration = "postgres" | "smtp" | "nats";
 
+/** One environment variable a condition's configuration asks for. */
+export interface EnvDeclaration {
+  readonly name: string;
+  readonly property: string;
+  readonly required: boolean;
+}
+
 export interface Condition {
   readonly name?: string;
   readonly kind?: string;
@@ -9,17 +16,24 @@ export interface Condition {
     readonly engine?: string;
     readonly operations?: readonly unknown[];
   };
+  readonly configuration?: {
+    readonly env?: readonly { readonly name?: string; readonly property?: string; readonly required?: boolean }[];
+  };
 }
 
-export interface NatsRequirement {
+export interface Requirement {
+  readonly env: readonly EnvDeclaration[];
+}
+
+export interface NatsRequirement extends Requirement {
   readonly stream: string;
   readonly subject: string;
   readonly consumer: string;
 }
 
 export interface Requirements {
-  readonly postgres: boolean;
-  readonly smtp: boolean;
+  readonly postgres: Requirement | undefined;
+  readonly smtp: Requirement | undefined;
   readonly nats: NatsRequirement | undefined;
   /** Conditions that are invalid or unsupported and not optional. */
   readonly problems: readonly string[];
@@ -32,6 +46,17 @@ function label(condition: Condition, index: number): string {
 function operationList(condition: Condition): readonly Record<string, unknown>[] {
   const operations = condition.interface?.operations ?? [];
   return operations.filter((operation): operation is Record<string, unknown> => typeof operation === "object" && operation !== null);
+}
+
+function readEnv(condition: Condition): EnvDeclaration[] {
+  const declarations: EnvDeclaration[] = [];
+  for (const item of condition.configuration?.env ?? []) {
+    if (typeof item.name === "string" && typeof item.property === "string") {
+      // An item is required unless the profile says otherwise.
+      declarations.push({ name: item.name, property: item.property, required: item.required !== false });
+    }
+  }
+  return declarations;
 }
 
 function readNats(condition: Condition, name: string, problems: string[]): NatsRequirement | undefined {
@@ -49,7 +74,7 @@ function readNats(condition: Condition, name: string, problems: string[]): NatsR
     problems.push(`${name}: nats.service needs a subject subscribe operation naming the subject`);
     return undefined;
   }
-  return { stream, subject, consumer: consumerName };
+  return { stream, subject, consumer: consumerName, env: readEnv(condition) };
 }
 
 /**
@@ -59,6 +84,8 @@ function readNats(condition: Condition, name: string, problems: string[]): NatsR
 export function readRequirements(conditions: readonly Condition[]): Requirements {
   const problems: string[] = [];
   const found = new Set<Integration>();
+  let postgres: Requirement | undefined;
+  let smtp: Requirement | undefined;
   let nats: NatsRequirement | undefined;
 
   conditions.forEach((condition, index) => {
@@ -88,9 +115,13 @@ export function readRequirements(conditions: readonly Condition[]): Requirements
       if (nats === undefined) {
         return;
       }
+    } else if (integration === "postgres") {
+      postgres = { env: readEnv(condition) };
+    } else {
+      smtp = { env: readEnv(condition) };
     }
     found.add(integration);
   });
 
-  return { postgres: found.has("postgres"), smtp: found.has("smtp"), nats, problems };
+  return { postgres, smtp, nats, problems };
 }

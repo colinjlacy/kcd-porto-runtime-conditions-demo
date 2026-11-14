@@ -34,25 +34,19 @@ variable "from_address" {
   type = string
 }
 
-variable "to_address" {
-  type = string
-}
-
 variable "tags" {
   type = map(string)
 }
 
-# The platform owns and verifies the sender and recipient identities (infra/platform/ses.tf).
-# Credentials are only issued once both are verified, which SES requires for sending from the
-# sender identity and, while the account is in the SES sandbox, to the recipient.
-data "aws_sesv2_email_identity" "address" {
-  for_each       = toset([var.from_address, var.to_address])
-  email_identity = each.value
+# The platform owns and verifies sender identities (infra/platform/ses.tf). Credentials are only
+# issued once the requested sender identity is verified.
+data "aws_sesv2_email_identity" "sender" {
+  email_identity = var.from_address
 
   lifecycle {
     postcondition {
       condition     = self.verified_for_sending_status
-      error_message = "The SES identity ${each.value} is missing or not verified; the platform must verify it first."
+      error_message = "The SES identity ${var.from_address} is missing or not verified; the platform must verify it first."
     }
   }
 }
@@ -67,7 +61,7 @@ resource "aws_iam_user" "smtp" {
 data "aws_iam_policy_document" "send" {
   statement {
     actions   = ["ses:SendRawEmail"]
-    resources = [data.aws_sesv2_email_identity.address[var.from_address].arn]
+    resources = [data.aws_sesv2_email_identity.sender.arn]
   }
 }
 
@@ -97,9 +91,5 @@ output "password" {
 }
 
 output "sender_verified" {
-  value = data.aws_sesv2_email_identity.address[var.from_address].verified_for_sending_status
-}
-
-output "recipient_verified" {
-  value = data.aws_sesv2_email_identity.address[var.to_address].verified_for_sending_status
+  value = data.aws_sesv2_email_identity.sender.verified_for_sending_status
 }

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Kratix configure pipeline: renders a MailHog Deployment and Service, connection settings and
-# SMTP credentials for one source profile. Kratix delivers /kratix/output to the dev Destination.
+# Kratix configure pipeline: renders a MailHog Deployment and Service and a service-binding Secret
+# for one EmailSender request. Outputs are named after the request. Kratix delivers /kratix/output
+# to the dev Destination. MailHog accepts any credentials; the generated ones keep the binding
+# identical to the production sender.
 set -euo pipefail
 
 object=/kratix/input/object.yaml
@@ -17,33 +19,27 @@ read_field() {
   printf '%s' "$value"
 }
 
-source_namespace="$(read_field .spec.source.namespace)"
-source_name="$(read_field .spec.source.name)"
-source_uid="$(read_field .spec.source.uid)"
-notification_from="$(read_field .spec.from)"
-notification_to="$(read_field .spec.to)"
-
 request_kind="$(read_field .kind)"
 request_api_version="$(read_field .apiVersion)"
 request_name="$(read_field .metadata.name)"
 request_uid="$(read_field .metadata.uid)"
 request_namespace="$(read_field .metadata.namespace)"
+sender="$(read_field .spec.sender)"
 
-# Names derive from the source profile UID so a recreated profile never reuses old resources.
-id="smtp-$(printf '%s' "$source_uid" | sha256sum | cut -c1-12)"
-credentials_name="${id}-credentials"
-host="${id}.${target_namespace}.svc.cluster.local"
+name="$request_name"
+host="${name}.${target_namespace}.svc.cluster.local"
 
 # The password is kept in a Secret owned by the request in the management cluster, so
 # reruns reuse it and deleting the request removes it.
-password_b64="$(kubectl get secret "$credentials_name" -n "$request_namespace" \
+password_secret="${name}-password"
+password_b64="$(kubectl get secret "$password_secret" -n "$request_namespace" \
   --ignore-not-found -o jsonpath='{.data.password}')"
 if [[ -z "$password_b64" ]]; then
   kubectl create -f - <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ${credentials_name}
+  name: ${password_secret}
   namespace: ${request_namespace}
   ownerReferences:
     - apiVersion: ${request_api_version}
@@ -53,100 +49,60 @@ metadata:
 stringData:
   password: $(openssl rand -hex 24)
 EOF
-  password_b64="$(kubectl get secret "$credentials_name" -n "$request_namespace" \
+  password_b64="$(kubectl get secret "$password_secret" -n "$request_namespace" \
     -o jsonpath='{.data.password}')"
 fi
 password="$(printf '%s' "$password_b64" | base64 -d)"
 
-labels="{app.kubernetes.io/name: mailhog, app.kubernetes.io/instance: ${id}, demo.runtimeconditions.io/source-uid: \"${source_uid}\"}"
-annotations="{demo.runtimeconditions.io/source-namespace: \"${source_namespace}\", demo.runtimeconditions.io/source-name: \"${source_name}\"}"
-
 mkdir -p /kratix/output /kratix/metadata
-cat > /kratix/output/smtp.yaml <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${credentials_name}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-type: Opaque
-stringData:
-  SMTP_USERNAME: ${id}
-  SMTP_PASSWORD: ${password}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${id}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-data:
-  SMTP_HOST: ${host}
-  SMTP_PORT: "1025"
-  SMTP_TLS_MODE: disabled
-  NOTIFICATION_FROM: ${notification_from}
-  NOTIFICATION_TO: ${notification_to}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${id}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-spec:
-  selector:
-    app.kubernetes.io/instance: ${id}
-  ports:
-    - name: smtp
-      port: 1025
-      targetPort: smtp
-    - name: http
-      port: 8025
-      targetPort: http
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${id}
-  namespace: ${target_namespace}
-  labels: ${labels}
-  annotations: ${annotations}
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/instance: ${id}
-  template:
-    metadata:
-      labels: ${labels}
-    spec:
-      containers:
-        - name: mailhog
-          image: ${mailhog_image}
-          ports:
-            - name: smtp
-              containerPort: 1025
-            - name: http
-              containerPort: 8025
-          readinessProbe:
-            tcpSocket:
-              port: smtp
-            periodSeconds: 5
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-EOF
+manifests="$(jq -n \
+  --arg name "$name" --arg namespace "$target_namespace" \
+  --arg requestNamespace "$request_namespace" --arg requestName "$request_name" \
+  --arg host "$host" --arg password "$password" --arg sender "$sender" --arg image "$mailhog_image" '
+  def meta: {
+    name: $name, namespace: $namespace,
+    labels: {"app.kubernetes.io/name": "mailhog", "app.kubernetes.io/instance": $name, "app.kubernetes.io/managed-by": "kratix"},
+    annotations: {"platform.runtimeconditions.io/request-namespace": $requestNamespace, "platform.runtimeconditions.io/request-name": $requestName}
+  };
+  [
+    {
+      apiVersion: "v1", kind: "Secret", metadata: meta, type: "Opaque",
+      stringData: {type: "smtp", host: $host, port: "1025", username: $name, password: $password, tlsMode: "disabled", sender: $sender}
+    },
+    {
+      apiVersion: "v1", kind: "Service", metadata: meta,
+      spec: {
+        selector: {"app.kubernetes.io/instance": $name},
+        ports: [{name: "smtp", port: 1025, targetPort: "smtp"}, {name: "http", port: 8025, targetPort: "http"}]
+      }
+    },
+    {
+      apiVersion: "apps/v1", kind: "Deployment", metadata: meta,
+      spec: {
+        replicas: 1, strategy: {type: "Recreate"},
+        selector: {matchLabels: {"app.kubernetes.io/instance": $name}},
+        template: {
+          metadata: {labels: {"app.kubernetes.io/name": "mailhog", "app.kubernetes.io/instance": $name}},
+          spec: {
+            containers: [{
+              name: "mailhog", image: $image,
+              ports: [{name: "smtp", containerPort: 1025}, {name: "http", containerPort: 8025}],
+              readinessProbe: {tcpSocket: {port: "smtp"}, periodSeconds: 5},
+              securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
+            }]
+          }
+        }
+      }
+    }
+  ]')"
+for kind in $(jq -r '.[].kind | ascii_downcase' <<<"$manifests"); do
+  jq --arg kind "$kind" '.[] | select(.kind | ascii_downcase == $kind)' <<<"$manifests" |
+    yq -P > "/kratix/output/${kind}.yaml"
+done
 
 cat > /kratix/metadata/status.yaml <<EOF
+bindingSecret: ${name}
 host: ${host}
 port: 1025
-connectionConfigMap: ${id}
-credentialsSecret: ${credentials_name}
-inboxService: ${id}:8025
+inboxService: ${name}:8025
 EOF

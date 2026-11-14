@@ -1,15 +1,15 @@
-name: Promise application
+name: Promise workload
 
 on:
   push:
     branches: [main]
     paths:
-      - promises/application/**
-      - .github/workflows/promise-application.yml
+      - promises/workload/**
+      - .github/workflows/promise-workload.yml
   pull_request:
     paths:
-      - promises/application/**
-      - .github/workflows/promise-application.yml
+      - promises/workload/**
+      - .github/workflows/promise-workload.yml
   workflow_dispatch:
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Name the image
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/promise-application" >> "$GITHUB_ENV"
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/promise-workload" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -46,11 +46,11 @@ jobs:
       - name: Build and push the image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: promises/application
+          context: promises/workload
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
           provenance: false
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
-          cache-from: type=gha,scope=promise-application
-          cache-to: type=gha,mode=max,scope=promise-application
+          cache-from: type=gha,scope=promise-workload
+          cache-to: type=gha,mode=max,scope=promise-workload

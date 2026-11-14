@@ -1,25 +1,34 @@
 import { createHash } from "node:crypto";
-import { type Condition, type Integration, readRequirements } from "./conditions.js";
+import { type Condition, readRequirements } from "./conditions.js";
+import { type Images, workloadParts } from "./workload.js";
 
-export const GROUP = "platform.runtimeconditions.io";
-export const VERSION = "v1alpha1";
-export const API_VERSION = `${GROUP}/${VERSION}`;
 export const MANAGED_BY = "rcprofile-watcher";
 export const IMAGE_ANNOTATION = "demo.runtimeconditions.io/image";
 export const SOURCE_UID_LABEL = "demo.runtimeconditions.io/source-uid";
 
+const PLATFORM_GROUP = "platform.runtimeconditions.io";
+const VERSION = "v1alpha1";
+
 export type Environment = "dev" | "production";
 export const ENVIRONMENTS: readonly Environment[] = ["dev", "production"];
 
-const INTEGRATION_KINDS: Record<Environment, Record<Integration, string>> = {
-  dev: { postgres: "DevPostgres", smtp: "DevSmtp", nats: "DevNats" },
-  production: { postgres: "ProdPostgres", smtp: "ProdSmtp", nats: "ProdNats" },
-};
-const APPLICATION_KIND = "Application";
+export interface RequestType {
+  readonly apiVersion: string;
+  readonly kind: string;
+}
 
-export const REQUEST_KINDS: readonly string[] = [
-  APPLICATION_KIND,
-  ...ENVIRONMENTS.flatMap((environment) => Object.values(INTEGRATION_KINDS[environment])),
+// Integration requests live in a per-environment API group; workloads are shared by all environments.
+const environmentApiVersion = (environment: Environment): string => `${environment}.${PLATFORM_GROUP}/${VERSION}`;
+const WORKLOAD: RequestType = { apiVersion: `${PLATFORM_GROUP}/${VERSION}`, kind: "Workload" };
+const POSTGRES = "PostgresDatabase";
+const NATS = "NatsStream";
+const EMAIL = "EmailSender";
+
+export const REQUEST_TYPES: readonly RequestType[] = [
+  WORKLOAD,
+  ...ENVIRONMENTS.flatMap((environment) =>
+    [POSTGRES, NATS, EMAIL].map((kind) => ({ apiVersion: environmentApiVersion(environment), kind })),
+  ),
 ];
 
 export interface Profile {
@@ -37,6 +46,7 @@ export interface Settings {
   readonly requestNamespace: string;
   readonly smtpFrom: string;
   readonly smtpTo: string;
+  readonly images: Images;
 }
 
 export interface RequestObject {
@@ -86,30 +96,23 @@ function imageReference(profile: Profile, problems: string[]): string | undefine
   return `${repository}@${digest}`;
 }
 
-/** Everything the platform should be running for one profile: a request per integration and environment. */
+/** Everything the platform should be running for one profile: integration requests and a workload per environment. */
 export function planProfile(profile: Profile, settings: Settings): Plan {
   const requirements = readRequirements(profile.conditions ?? []);
   const problems = [...requirements.problems];
   const image = imageReference(profile, problems);
   const hash = sourceHash(profile.metadata.uid);
-  const source = { namespace: profile.metadata.namespace, name: profile.metadata.name, uid: profile.metadata.uid };
 
-  const integrations: [Integration, Record<string, unknown>][] = [];
-  if (requirements.postgres) {
-    integrations.push(["postgres", {}]);
-  }
-  if (requirements.smtp) {
-    integrations.push(["smtp", { from: settings.smtpFrom, to: settings.smtpTo }]);
-  }
-  if (requirements.nats !== undefined) {
-    integrations.push(["nats", { ...requirements.nats }]);
-  }
-
-  const request = (environment: Environment, kind: string, name: string, spec: Record<string, unknown>): RequestObject => ({
-    apiVersion: API_VERSION,
-    kind,
+  const request = (
+    environment: Environment,
+    type: RequestType,
+    name: string,
+    spec: Record<string, unknown>,
+  ): RequestObject => ({
+    apiVersion: type.apiVersion,
+    kind: type.kind,
     metadata: {
-      name: `${environment}-${name}-${hash}`,
+      name,
       namespace: settings.requestNamespace,
       labels: {
         "app.kubernetes.io/managed-by": MANAGED_BY,
@@ -121,24 +124,55 @@ export function planProfile(profile: Profile, settings: Settings): Plan {
         "demo.runtimeconditions.io/source-name": profile.metadata.name,
       },
     },
-    spec: { source, ...spec },
+    spec,
   });
 
   const requests: RequestObject[] = [];
-  for (const environment of ENVIRONMENTS) {
-    for (const [integration, spec] of integrations) {
-      requests.push(request(environment, INTEGRATION_KINDS[environment][integration], integration, spec));
+  const workloads: RequestObject[] = [];
+  for (const [index, environment] of ENVIRONMENTS.entries()) {
+    const environmentType = (kind: string): RequestType => ({ apiVersion: environmentApiVersion(environment), kind });
+    const names = {
+      postgres: `${environment}-postgres-${hash}`,
+      email: `${environment}-email-${hash}`,
+      nats: `${environment}-nats-${hash}`,
+    };
+    if (requirements.postgres !== undefined) {
+      requests.push(request(environment, environmentType(POSTGRES), names.postgres, {}));
     }
-    // An incomplete profile gets its valid dependencies but no application.
-    if (problems.length === 0) {
+    if (requirements.smtp !== undefined) {
+      requests.push(request(environment, environmentType(EMAIL), names.email, { sender: settings.smtpFrom }));
+    }
+    if (requirements.nats !== undefined) {
+      const { stream, subject, consumer } = requirements.nats;
       requests.push(
-        request(environment, APPLICATION_KIND, "application", {
-          environment,
-          dependencies: integrations.map(([integration]) => integration),
-          ...(image === undefined ? {} : { image }),
+        request(environment, environmentType(NATS), names.nats, {
+          stream,
+          subjects: [subject],
+          consumers: [{ name: consumer, filterSubject: subject }],
         }),
       );
     }
+
+    const parts = workloadParts(requirements, names, settings.images, settings.smtpTo);
+    if (index === 0) {
+      // The environments differ only in the names, so their problems are the same.
+      problems.push(...parts.problems);
+    }
+    if (image !== undefined) {
+      workloads.push(
+        request(environment, WORKLOAD, `${environment}-workload-${hash}`, {
+          destinationLabels: { environment },
+          image,
+          env: parts.env,
+          checks: parts.checks,
+        }),
+      );
+    }
+  }
+
+  // An incomplete profile gets its valid integrations but no workload.
+  if (problems.length === 0) {
+    requests.push(...workloads);
   }
   return { requests, problems };
 }

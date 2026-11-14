@@ -26,6 +26,11 @@ function readSettings(): Settings {
     requestNamespace: required("REQUEST_NAMESPACE"),
     smtpFrom: required("SMTP_FROM_ADDRESS"),
     smtpTo: required("SMTP_TO_ADDRESS"),
+    images: {
+      postgresClient: required("POSTGRES_CLIENT_IMAGE"),
+      curl: required("CURL_IMAGE"),
+      natsBox: required("NATS_BOX_IMAGE"),
+    },
   };
 }
 

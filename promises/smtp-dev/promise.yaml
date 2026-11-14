@@ -10,14 +10,14 @@ spec:
     apiVersion: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     metadata:
-      name: devsmtps.platform.runtimeconditions.io
+      name: emailsenders.dev.platform.runtimeconditions.io
     spec:
-      group: platform.runtimeconditions.io
+      group: dev.platform.runtimeconditions.io
       scope: Namespaced
       names:
-        kind: DevSmtp
-        plural: devsmtps
-        singular: devsmtp
+        kind: EmailSender
+        plural: emailsenders
+        singular: emailsender
       versions:
         - name: v1alpha1
           served: true
@@ -27,29 +27,18 @@ spec:
           schema:
             openAPIV3Schema:
               type: object
+              description: >-
+                An SMTP server that captures mail sent as one sender address, backed by MailHog. The
+                connection details are published as a Secret named after the request, with the
+                service-binding keys type, host, port, username, password, tlsMode and sender.
+                Request names must be unique within the cluster.
               properties:
                 spec:
                   type: object
-                  required: [source, from, to]
+                  required: [sender]
                   properties:
-                    source:
-                      type: object
-                      description: RCProfile that requested this SMTP access.
-                      required: [namespace, name, uid]
-                      properties:
-                        namespace:
-                          type: string
-                        name:
-                          type: string
-                        uid:
-                          type: string
-                    from:
+                    sender:
                       type: string
-                      description: Sender address for notifications.
-                      pattern: ^[^\s@<>,;]+@[^\s@<>,;]+$
-                    to:
-                      type: string
-                      description: Recipient address for notifications.
                       pattern: ^[^\s@<>,;]+@[^\s@<>,;]+$
                 status:
                   type: object

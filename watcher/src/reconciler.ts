@@ -1,6 +1,7 @@
 import { type Profile, type RequestObject, type Settings, planProfile } from "./requests.js";
 
 export interface ExistingRequest {
+  readonly apiVersion: string;
   readonly kind: string;
   readonly name: string;
   readonly sourceUid: string;
@@ -47,10 +48,10 @@ export class Reconciler {
       }
     }
 
-    const wanted = new Set(plan.requests.map((request) => `${request.kind}/${request.metadata.name}`));
+    const wanted = new Set(plan.requests.map((request) => `${request.apiVersion}/${request.kind}/${request.metadata.name}`));
     try {
       for (const existing of await this.cluster.listRequests()) {
-        if (existing.sourceUid === uid && !wanted.has(`${existing.kind}/${existing.name}`)) {
+        if (existing.sourceUid === uid && !wanted.has(`${existing.apiVersion}/${existing.kind}/${existing.name}`)) {
           await this.cluster.deleteRequest(existing);
         }
       }
