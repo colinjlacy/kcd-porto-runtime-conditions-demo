@@ -1,6 +1,6 @@
 # One Aurora Serverless v2 PostgreSQL cluster shared by every production profile. It is built
 # here, ahead of any request, so the postgres-prod Promise only has to create a database and a
-# login on it. The cluster pauses when idle and resumes on the next connection.
+# login on it. It never pauses, so the first event after an idle period is not delayed by a resume.
 locals {
   shared_postgres_name = "${local.publisher_name}-shared-postgres"
 }
@@ -28,9 +28,8 @@ resource "aws_rds_cluster" "shared_postgres" {
   apply_immediately       = true
 
   serverlessv2_scaling_configuration {
-    min_capacity             = 0
-    max_capacity             = 2
-    seconds_until_auto_pause = 300
+    min_capacity = 0.5
+    max_capacity = 2
   }
 }
 
