@@ -1,0 +1,7 @@
+# Local deployment values; do not commit account-specific configuration.
+/infra/foundation/default.tfvars
+EXTENSION-PROPOSAL.md
+IMPLEMENTATION-PLAN.md
+**/*/.terraform/
+**/*/terraform.tfstate
+**/*/terraform.tfstate.backup
