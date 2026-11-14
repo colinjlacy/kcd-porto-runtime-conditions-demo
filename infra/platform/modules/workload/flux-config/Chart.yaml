@@ -1,0 +1,4 @@
+apiVersion: v2
+name: flux-config
+description: Flux resources that apply one environment's Kratix output from the state bucket.
+version: 0.1.0

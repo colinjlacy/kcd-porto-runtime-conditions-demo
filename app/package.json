@@ -1,0 +1,41 @@
+{
+  "name": "shipment-notifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "db:generate": "drizzle-kit generate --name init",
+    "publish:sample": "tsx scripts/publish.ts"
+  },
+  "dependencies": {
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
+    "drizzle-orm": "0.45.4",
+    "nodemailer": "10.5.0",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@runtimeconditions/common-integrations": "0.3.0",
+    "@runtimeconditions/env-configuration": "0.3.0",
+    "@runtimeconditions/nats-service": "0.2.0",
+    "@runtimeconditions/typescript-profiler": "0.2.1",
+    "@types/mailparser": "3.9.0",
+    "@types/node": "22.20.5",
+    "@types/nodemailer": "8.0.2",
+    "@types/pg": "8.23.1",
+    "@types/smtp-server": "3.5.13",
+    "drizzle-kit": "0.31.11",
+    "mailparser": "3.14.3",
+    "selfsigned": "5.5.0",
+    "smtp-server": "3.21.4",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}

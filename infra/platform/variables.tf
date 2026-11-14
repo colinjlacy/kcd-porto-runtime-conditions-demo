@@ -38,12 +38,14 @@ variable "cluster_names" {
 variable "chart_versions" {
   description = "Explicit Helm chart version pins; these are chart versions, not application versions."
   type = object({
-    cert_manager = string
-    kratix       = string
+    cert_manager  = string
+    kratix        = string
+    rcprofile_crd = optional(string, "0.1.1")
   })
   default = {
-    cert_manager = "v1.21.3"
-    kratix       = "v0.0.1"
+    cert_manager  = "v1.21.3"
+    kratix        = "v0.0.1"
+    rcprofile_crd = "0.1.1"
   }
   nullable = false
 
@@ -52,23 +54,7 @@ variable "chart_versions" {
       for version in values(var.chart_versions) :
       can(regex("^v?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$", version))
     ])
-    error_message = "Pin exact cert-manager and Kratix chart versions; ranges and latest are not accepted."
-  }
-}
-
-variable "rcprofile_crd_file" {
-  description = "Path to the unchanged runtimeconditions.io RuntimeConditionsProfile CRD YAML from a pinned checkout."
-  type        = string
-  nullable    = false
-
-  validation {
-    condition = try(
-      fileexists(var.rcprofile_crd_file) &&
-      yamldecode(file(var.rcprofile_crd_file)).apiVersion == "apiextensions.k8s.io/v1" &&
-      yamldecode(file(var.rcprofile_crd_file)).kind == "CustomResourceDefinition" &&
-      yamldecode(file(var.rcprofile_crd_file)).metadata.name == "runtimeconditionsprofiles.runtimeconditions.io", false
-    )
-    error_message = "Supply an existing YAML file containing the RuntimeConditionsProfile CRD."
+    error_message = "Pin exact cert-manager, Kratix, and RCProfile CRD chart versions; ranges and latest are not accepted."
   }
 }
 
@@ -109,4 +95,58 @@ variable "helm_timeout_seconds" {
     condition     = var.helm_timeout_seconds > 0 && var.helm_timeout_seconds == floor(var.helm_timeout_seconds)
     error_message = "Use a positive whole number of seconds."
   }
+}
+
+variable "github_repository" {
+  description = "GitHub repository (owner/name) whose workflow may submit profiles."
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "Use the owner/name form, for example my-org/shipment-notification-demo."
+  }
+}
+
+variable "github_deployment_branch" {
+  description = "Branch whose workflow runs may assume the publisher role."
+  type        = string
+  default     = "main"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._/-]+$", var.github_deployment_branch))
+    error_message = "Use one literal branch name; wildcards are not accepted."
+  }
+}
+
+variable "create_github_oidc_provider" {
+  description = "Create the account's GitHub Actions OIDC provider. Set false if the account already has one."
+  type        = bool
+  default     = true
+  nullable    = false
+}
+
+variable "publisher_security_group_id" {
+  description = "Security group for the publisher Lambda; foundation lets it reach the management API on 443."
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^sg-[0-9a-f]+$", var.publisher_security_group_id))
+    error_message = "Supply a security group ID such as sg-0123456789abcdef0."
+  }
+}
+
+variable "workload_chart_versions" {
+  description = "Exact chart versions for Flux and NATS on the workload clusters."
+  type = object({
+    flux = string
+    nats = string
+  })
+  default = {
+    flux = "2.20.0"
+    nats = "2.15.2"
+  }
+  nullable = false
 }

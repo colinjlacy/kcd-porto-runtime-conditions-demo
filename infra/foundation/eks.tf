@@ -178,3 +178,8 @@ output "clusters" {
   }
   depends_on = [aws_eks_node_group.environment, aws_eks_access_policy_association.administrator]
 }
+
+output "profile_publisher_security_group_id" {
+  description = "Security group for the RCProfile publisher Lambda created by the platform root."
+  value       = aws_security_group.profile_publisher.id
+}

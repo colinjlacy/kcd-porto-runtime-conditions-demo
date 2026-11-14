@@ -1,0 +1,177 @@
+name: Shipment notifier
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Releases must finish in commit order; a newer push waits rather than cancelling a delivery.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: notifier
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d notifier"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/notifier
+      TEST_NATS_URL: nats://localhost:4222
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      # Service containers cannot pass arguments, and JetStream needs `-js`.
+      - name: Start NATS with JetStream
+        working-directory: .
+        run: |
+          docker run -d --name nats -p 4222:4222 nats:2-alpine -js
+          for _ in $(seq 1 30); do
+            (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null && exit 0
+            sleep 1
+          done
+          docker logs nats
+          exit 1
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  deliver:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      WORKLOAD_URI: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies and build
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install the Runtime Conditions tools
+        run: |
+          curl -fsSL https://runtimeconditions.github.io/packages/setup.sh | sudo sh
+          sudo apt-get install --yes rc-cli rc-profiler-typescript
+          rc --version
+
+      - name: Generate the Runtime Conditions profile
+        run: |
+          rc profile typescript generate \
+            --project app \
+            --name shipment-notifier \
+            --workload-uri "$WORKLOAD_URI" \
+            --workload-version "$GITHUB_SHA" \
+            --out profile.yaml
+
+      - name: Name the image
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the image
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: app
+          push: true
+          provenance: false
+          # Links the package to this repository so it can be made public and inherits access.
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Record the release
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg image "$IMAGE" \
+            --arg digest "$IMAGE_DIGEST" \
+            '{commit: $commit, image: $image, imageDigest: $digest}' > release.json
+          cat release.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            profile.yaml
+            release.json
+          if-no-files-found: error
+
+      # Credentials come from the platform's OpenTofu: a role that trusts this repository's
+      # deployment branch and may only invoke the profile publisher function.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.PUBLISHER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Submit the profile
+        env:
+          FUNCTION_NAME: ${{ vars.PUBLISHER_FUNCTION_NAME }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          yq -o=json profile.yaml \
+            | jq -c --arg digest "$IMAGE_DIGEST" '{profile: ., imageDigest: $digest}' > payload.json
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload fileb://payload.json \
+            response.json > invoke.json
+          cat invoke.json response.json
+          # Lambda reports a failed invocation as a successful API call carrying FunctionError.
+          if jq -e 'has("FunctionError")' invoke.json > /dev/null; then
+            exit 1
+          fi

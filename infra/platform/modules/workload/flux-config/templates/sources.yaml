@@ -1,0 +1,40 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: Bucket
+metadata:
+  name: kratix
+  namespace: {{ .Release.Namespace }}
+spec:
+  provider: aws
+  bucketName: {{ .Values.bucketName }}
+  endpoint: s3.{{ .Values.region }}.amazonaws.com
+  region: {{ .Values.region }}
+  prefix: {{ .Values.environment }}/
+  interval: 1m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kratix-dependencies
+  namespace: {{ .Release.Namespace }}
+spec:
+  interval: 1m
+  prune: true
+  sourceRef:
+    kind: Bucket
+    name: kratix
+  path: ./{{ .Values.environment }}/dependencies
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kratix-resources
+  namespace: {{ .Release.Namespace }}
+spec:
+  interval: 1m
+  prune: true
+  dependsOn:
+    - name: kratix-dependencies
+  sourceRef:
+    kind: Bucket
+    name: kratix
+  path: ./{{ .Values.environment }}/resources
