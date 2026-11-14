@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Kratix pipeline: "configure" registers the SES sender and recipient identities and SMTP
-# credentials for one source profile with OpenTofu, then renders the connection settings for the
-# production cluster; "delete" destroys them.
+# Kratix pipeline: "configure" issues SMTP credentials for one source profile with OpenTofu, an IAM
+# user allowed to send only as the platform's verified sender identity, then renders the
+# connection settings for the production cluster; "delete" destroys the user.
 set -euo pipefail
 
 mode="${1:?usage: pipeline.sh configure|delete}"

@@ -7,14 +7,12 @@ locals {
   management_oidc_issuer = local.management_cluster.identity[0].oidc[0].issuer
   management_oidc_host   = replace(local.management_oidc_issuer, "https://", "")
 
-  promise_names = toset(["postgres-prod", "smtp-prod"])
+  promise_names = toset(["smtp-prod"])
 
   promise_role_policies = {
-    "postgres-prod" = data.aws_iam_policy_document.postgres_prod.json
-    "smtp-prod"     = data.aws_iam_policy_document.smtp_prod.json
+    "smtp-prod" = data.aws_iam_policy_document.smtp_prod.json
   }
 
-  rds_arn_prefix = "arn:${data.aws_partition.current.partition}:rds:${var.aws_region}:${var.aws_account_id}"
   iam_arn_prefix = "arn:${data.aws_partition.current.partition}:iam::${var.aws_account_id}"
 }
 
@@ -72,78 +70,14 @@ data "aws_iam_policy_document" "promise_state" {
   }
 }
 
-data "aws_iam_policy_document" "postgres_prod" {
-  source_policy_documents = [data.aws_iam_policy_document.promise_state["postgres-prod"].json]
-
-  statement {
-    sid = "DescribeNetworkAndDatabases"
-    actions = [
-      "ec2:DescribeAccountAttributes",
-      "ec2:DescribeNetworkInterfaces",
-      "ec2:DescribeSecurityGroups",
-      "ec2:DescribeSubnets",
-      "ec2:DescribeVpcs",
-      "rds:DescribeDBClusters",
-      "rds:DescribeDBEngineVersions",
-      "rds:DescribeDBInstances",
-      "rds:DescribeDBSubnetGroups",
-      "rds:DescribeGlobalClusters",
-    ]
-    resources = ["*"]
-  }
-  # Aurora resources created by this Promise are named with the `pg-` prefix.
-  statement {
-    sid = "ManagePostgresResources"
-    actions = [
-      "rds:AddTagsToResource",
-      "rds:CreateDBCluster",
-      "rds:CreateDBInstance",
-      "rds:CreateDBSubnetGroup",
-      "rds:DeleteDBCluster",
-      "rds:DeleteDBInstance",
-      "rds:DeleteDBSubnetGroup",
-      "rds:ListTagsForResource",
-      "rds:ModifyDBCluster",
-      "rds:ModifyDBInstance",
-      "rds:ModifyDBSubnetGroup",
-      "rds:RemoveTagsFromResource",
-    ]
-    resources = [
-      "${local.rds_arn_prefix}:cluster:pg-*",
-      "${local.rds_arn_prefix}:db:pg-*",
-      "${local.rds_arn_prefix}:subgrp:pg-*",
-      "${local.rds_arn_prefix}:cluster-pg:default.*",
-      "${local.rds_arn_prefix}:pg:default.*",
-    ]
-  }
-  statement {
-    sid       = "RdsServiceLinkedRole"
-    actions   = ["iam:CreateServiceLinkedRole"]
-    resources = ["${local.iam_arn_prefix}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS"]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:AWSServiceName"
-      values   = ["rds.amazonaws.com"]
-    }
-  }
-}
-
 data "aws_iam_policy_document" "smtp_prod" {
   source_policy_documents = [data.aws_iam_policy_document.promise_state["smtp-prod"].json]
 
+  # The sender and recipient identities belong to the platform (ses.tf); the Promise only checks them.
   statement {
-    sid = "ManageSesIdentities"
-    actions = [
-      "ses:CreateEmailIdentity",
-      "ses:DeleteEmailIdentity",
-      "ses:GetEmailIdentity",
-      "ses:ListTagsForResource",
-      "ses:PutEmailIdentityDkimAttributes",
-      "ses:PutEmailIdentityMailFromAttributes",
-      "ses:TagResource",
-      "ses:UntagResource",
-    ]
-    resources = ["arn:${data.aws_partition.current.partition}:ses:${var.aws_region}:${var.aws_account_id}:identity/*"]
+    sid       = "ReadSesIdentities"
+    actions   = ["ses:GetEmailIdentity", "ses:ListTagsForResource"]
+    resources = [for identity in aws_sesv2_email_identity.notification : identity.arn]
   }
   # SMTP credentials are access keys of IAM users created under the `smtp-prod` path.
   statement {

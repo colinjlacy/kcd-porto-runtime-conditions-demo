@@ -45,11 +45,11 @@ spec:
                           type: string
                     from:
                       type: string
-                      description: Sender address; SES verifies it by email.
+                      description: Sender address; must be an SES identity the platform has verified.
                       pattern: ^[^\s@<>,;]+@[^\s@<>,;]+$
                     to:
                       type: string
-                      description: Recipient address; SES verifies it by email.
+                      description: Recipient address; must be an SES identity the platform has verified.
                       pattern: ^[^\s@<>,;]+@[^\s@<>,;]+$
                 status:
                   type: object
