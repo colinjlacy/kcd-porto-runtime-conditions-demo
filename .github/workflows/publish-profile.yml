@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
   id-token: write
 
 defaults:
@@ -43,24 +42,6 @@ jobs:
               .[0].workload.uri == $uri
             ' > /dev/null
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve this commit's application image
-        run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          if ! digest="$(docker buildx imagetools inspect "$image:$GITHUB_SHA" --format '{{json .Manifest}}' | jq -er '.digest')"; then
-            echo "Wait for Build application image to succeed for this main commit, then publish again." >&2
-            exit 1
-          fi
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
-          printf 'Image: %s@%s\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
-
       # The platform role trusts this repository's main branch and only invokes the publisher.
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -75,7 +56,7 @@ jobs:
           invocation="$(mktemp)"
           trap 'rm -f "$response" "$invocation"' EXIT
           yq -o=json profile.yaml |
-            jq -c --arg digest "$IMAGE_DIGEST" '{profile: ., imageDigest: $digest}' |
+            jq -c '{profile: .}' |
             aws lambda invoke \
               --function-name "$FUNCTION_NAME" \
               --cli-binary-format raw-in-base64-out \
@@ -85,5 +66,5 @@ jobs:
             cat "$response"
             exit 1
           fi
-          jq -r '"Submitted \(.namespace)/\(.name), UID \(.uid), image \(.image)"' "$response"
+          jq -r '"Submitted \(.namespace)/\(.name), UID \(.uid)"' "$response"
           printf '\nProfile submitted successfully. Environment provisioning continues independently.\n' >> "$GITHUB_STEP_SUMMARY"

@@ -116,10 +116,23 @@ test("builds the workload from the profile's declared variables and the environm
   );
 });
 
-test("withholds the workload until the image digest is recorded", () => {
-  const plan = planProfile(profile([postgres]), settings);
-  assert.equal(find(plan.requests, "Workload", "dev"), undefined);
+test("uses the repository's latest image when no digest is recorded", () => {
+  const plan = planProfile(profile([postgres, smtp, nats]), settings);
+  assert.deepEqual(plan.problems, []);
+  assert.equal(plan.requests.filter((request) => request.kind === "Workload").length, 2);
+  for (const environment of ["dev", "production"]) {
+    assert.equal(find(plan.requests, "Workload", environment)?.spec.image, "ghcr.io/colinjlacy/kcd-demo:latest");
+  }
   assert.notEqual(find(plan.requests, "PostgresDatabase", "dev"), undefined);
+});
+
+test("keeps integration-only behavior when no GitHub repository can be derived", () => {
+  for (const workload of [undefined, {}, { uri: "https://example.com/demo" }]) {
+    const plan = planProfile({ ...profile([postgres]), workload }, settings);
+    assert.deepEqual(plan.problems, []);
+    assert.equal(plan.requests.some((request) => request.kind === "Workload"), false);
+    assert.equal(plan.requests.filter((request) => request.kind === "PostgresDatabase").length, 2);
+  }
 });
 
 test("names requests after the profile instance, not its name", () => {

@@ -85,10 +85,10 @@ function imageRepository(uri: string | undefined): string | undefined {
 
 function imageReference(profile: Profile, problems: string[]): string | undefined {
   const digest = profile.metadata.annotations?.[IMAGE_ANNOTATION];
-  if (digest === undefined) {
-    return undefined;
-  }
   const repository = imageRepository(profile.workload?.uri);
+  if (digest === undefined) {
+    return repository === undefined ? undefined : `${repository}:latest`;
+  }
   if (!DIGEST_PATTERN.test(digest) || repository === undefined) {
     problems.push(`cannot derive an image from workload ${profile.workload?.uri ?? "uri"} and ${IMAGE_ANNOTATION}`);
     return undefined;

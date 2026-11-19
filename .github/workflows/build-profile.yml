@@ -88,4 +88,4 @@ jobs:
         run: |
           printf 'Committed root `profile.yaml` to `main` at `%s`, generated from `%s`.\n\n' "$PROFILE_COMMIT" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           printf 'Download [profile.yaml](%s).\n\n' "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
-          printf 'When ready to publish, manually run **Build application image** on `main`, wait for it to succeed, then run **Publish Runtime Conditions Profile**.\n' >> "$GITHUB_STEP_SUMMARY"
+          printf 'When ready, run **Publish Runtime Conditions Profile** on `main` to submit the committed YAML.\n' >> "$GITHUB_STEP_SUMMARY"
