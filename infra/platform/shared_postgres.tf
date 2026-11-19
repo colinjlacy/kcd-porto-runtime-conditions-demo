@@ -33,6 +33,7 @@ resource "aws_rds_cluster" "shared_postgres" {
   db_subnet_group_name    = aws_db_subnet_group.shared_postgres.name
   vpc_security_group_ids  = [var.publisher_security_group_id]
   storage_encrypted       = true
+  enable_http_endpoint    = true
   backup_retention_period = 1
   skip_final_snapshot     = true
   apply_immediately       = true
@@ -48,6 +49,28 @@ resource "aws_rds_cluster_instance" "shared_postgres_writer" {
   cluster_identifier = aws_rds_cluster.shared_postgres.id
   engine             = aws_rds_cluster.shared_postgres.engine
   instance_class     = "db.serverless"
+}
+
+# Data API uses the same admin login as the Promise workflow. No password rotation is enabled.
+# A unique name avoids collisions with secrets pending deletion between full platform rebuilds.
+resource "aws_secretsmanager_secret" "shared_postgres_admin" {
+  name_prefix = "${local.shared_postgres_name}-admin-"
+  description = "Shared Aurora admin credentials for the demo's RDS Data API checks."
+}
+
+resource "aws_secretsmanager_secret_version" "shared_postgres_admin" {
+  secret_id = aws_secretsmanager_secret.shared_postgres_admin.id
+  secret_string = jsonencode({
+    engine              = "postgres"
+    host                = aws_rds_cluster.shared_postgres.endpoint
+    port                = aws_rds_cluster.shared_postgres.port
+    dbname              = "postgres"
+    dbClusterIdentifier = aws_rds_cluster.shared_postgres.cluster_identifier
+    username            = aws_rds_cluster.shared_postgres.master_username
+    password            = random_password.shared_postgres_admin.result
+  })
+
+  depends_on = [aws_rds_cluster_instance.shared_postgres_writer]
 }
 
 # Read by the postgres-prod Promise workflow to create a database and login per profile.
@@ -68,9 +91,12 @@ resource "kubernetes_secret_v1" "shared_postgres_admin" {
 }
 
 output "shared_postgres" {
-  description = "Endpoint of the shared production Aurora cluster and the management-cluster Secret that holds its admin login."
+  description = "Shared Aurora endpoint, Kubernetes admin Secret, and non-secret identifiers for RDS Data API checks."
   value = {
-    endpoint = aws_rds_cluster.shared_postgres.endpoint
-    secret   = "${kubernetes_secret_v1.shared_postgres_admin.metadata[0].namespace}/${kubernetes_secret_v1.shared_postgres_admin.metadata[0].name}"
+    endpoint         = aws_rds_cluster.shared_postgres.endpoint
+    secret           = "${kubernetes_secret_v1.shared_postgres_admin.metadata[0].namespace}/${kubernetes_secret_v1.shared_postgres_admin.metadata[0].name}"
+    cluster_arn      = aws_rds_cluster.shared_postgres.arn
+    admin_secret_arn = aws_secretsmanager_secret_version.shared_postgres_admin.secret_arn
+    region           = var.aws_region
   }
 }

@@ -6,3 +6,6 @@ IMPLEMENTATION-PLAN.md
 **/*/.terraform/
 **/*/terraform.tfstate
 **/*/terraform.tfstate.backup
+DEMO-*.md
+**/*/plan
+**/*/.DS_Store
